@@ -1,0 +1,17 @@
+[package]
+name = "salary_bracket_verifier"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+payroll_verifier = { path = "../payroll_verifier", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+payroll_verifier = { path = "../payroll_verifier" }
