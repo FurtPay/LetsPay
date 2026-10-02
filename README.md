@@ -1,4 +1,4 @@
-# Payfurt
+#LetsPay
 
 **Confidential payroll on Stellar** — salaries, invoices, and income proofs where amounts are hidden on-chain, powered by Groth16 zero-knowledge proofs over BLS12-381, verified by Soroban smart contracts using CAP-0059 host functions.
 
