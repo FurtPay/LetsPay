@@ -1,0 +1,13 @@
+{
+  "network": "testnet",
+  "identity": "maylord",
+  "payroll_verifier": "CDTL5N2EKQM7DA7UVU7EQ66FJJ6HPDAHFKNJR4BS2BUYOHFBAJUBG4XL",
+  "deployed_at": "2026-06-22T22:49:01Z",
+  "tokens": {
+    "xlm": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    "usdc": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+  },
+  "_note": "Current build: confidential ledger, invoice escrow, confidential payroll (note model), and auto-receive (viewing keys + encrypted notes). salary_bracket_verifier redeployed against this payroll address.",
+  "payroll_verifier_prev": "CCGSMNZVLXQKAGEWMUPUHHGPXAXHTFZNLRTSSZPBOS3MZROTQFVHTWTE",
+  "salary_bracket_verifier": "CCIWKQCR3PHRBE5M6JJAUFTQOYKFQE5JNTGMX5NBERIDYNQOQRRKFEQR"
+}

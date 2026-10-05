@@ -1,0 +1,14 @@
+{
+  "name": "payfurt-circuits",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Payfurt Circom circuits (BLS12-381 / Groth16)",
+  "scripts": {
+    "build": "bash ../scripts/setup_ceremony.sh payroll",
+    "clean": "rm -rf build"
+  },
+  "devDependencies": {
+    "circomlib": "^2.0.5",
+    "snarkjs": "^0.7.6"
+  }
+}
