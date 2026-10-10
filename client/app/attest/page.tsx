@@ -11,6 +11,7 @@ import {
   generateIncomeProof,
 } from "@/lib/zk/attestationProof";
 import { loadPayrollRecords, type PayrollRecord } from "@/lib/zk/confidentialWallet";
+import { LoadingSpinner, ErrorBox, SuccessBox, Card, InputField, Button } from "@/app/components/ui";
 
 function stroopsToXlm(s: bigint): string {
   return (Number(s) / 10_000_000).toFixed(7).replace(/\.?0+$/, "");
@@ -221,16 +222,19 @@ function EmployerAttestations({ address, signTransaction }: {
       </section>
 
       {step === "done" && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-4">
-          <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Attestation verified on-chain ✓</p>
-          <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-1">
-            The proof passed the BLS12-381 pairing check on Soroban. The transaction is a permanent,
-            public record — with no salary in it.
-          </p>
-        </div>
+        <SuccessBox
+          message="Attestation verified on-chain"
+          subtext="The proof passed the BLS12-381 pairing check on Soroban. The transaction is a permanent, public record — with no salary in it."
+        />
       )}
-      {step === "error" && <ErrorBox msg={msg} />}
-      {busy && <Spinner msg={msg} />}
+      {step === "error" && (
+        <ErrorBox
+          message={msg}
+          onRetry={() => setStep("idle")}
+          onDismiss={() => setStep("idle")}
+        />
+      )}
+      {busy && <LoadingSpinner text={msg} />}
     </div>
   );
 }
@@ -331,15 +335,19 @@ function IncomeProof({ address, signTransaction }: {
       </div>
 
       {step === "done" && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-4">
-          <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Income proven on-chain ✓</p>
-          <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-1">
-            You proved your total income meets the threshold without revealing any individual payment.
-          </p>
-        </div>
+        <SuccessBox
+          message="Income proven on-chain"
+          subtext="You proved your total income meets the threshold without revealing any individual payment."
+        />
       )}
-      {step === "error" && <ErrorBox msg={msg} />}
-      {busy && <Spinner msg={msg} />}
+      {step === "error" && (
+        <ErrorBox
+          message={msg}
+          onRetry={() => setStep("idle")}
+          onDismiss={() => setStep("idle")}
+        />
+      )}
+      {busy && <LoadingSpinner text={msg} />}
 
       <button onClick={proveIncome} disabled={busy || !threshold} className={primaryBtn}>
         {step === "proving" ? "Proving…" : step === "signing" ? "Signing…" : "Prove income"}
@@ -349,13 +357,6 @@ function IncomeProof({ address, signTransaction }: {
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────
-
-function Spinner({ msg }: { msg: string }) {
-  return <p className="text-sm text-zinc-500 flex items-center gap-2"><span className="animate-spin inline-block">⟳</span> {msg}</p>;
-}
-function ErrorBox({ msg }: { msg: string }) {
-  return <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-4"><p className="text-sm text-red-700 dark:text-red-300">{msg}</p></div>;
-}
 
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-white/[0.03] " +

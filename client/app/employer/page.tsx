@@ -10,6 +10,7 @@ import { encryptNote } from "@/lib/zk/noteCrypto";
 import { savePayrollRecord } from "@/lib/zk/confidentialWallet";
 import { XLM_SAC, PAYROLL_CONTRACT_ID, EXPLORER_BASE } from "@/lib/stellar/config";
 import { CopyButton } from "@/app/components/CopyButton";
+import { ProgressSteps, LoadingSpinner, SuccessBox, ErrorBox, Card, InputField, Button } from "@/app/components/ui";
 
 const TOKEN_ID = XLM_SAC;
 const MAX_RECIPIENTS = 10;
@@ -266,22 +267,19 @@ export default function EmployerPage() {
 
       {/* Success */}
       {step === "done" && batchId && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-5 flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Confidential payroll executed ✓</p>
-            <p className="text-sm text-emerald-700 dark:text-emerald-300">
-              Batch #{batchId} — total paid in, {claims.length} opaque notes created. Individual
-              salaries never touched the chain.
-            </p>
-            <a
-              href={`${EXPLORER_BASE}/${PAYROLL_CONTRACT_ID}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-emerald-600 dark:text-emerald-400 underline"
-            >
-              View on Stellar Expert →
-            </a>
-          </div>
+        <Card className="border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950">
+          <SuccessBox
+            message="Confidential payroll executed"
+            subtext={`Batch #${batchId} — total paid in, ${claims.length} opaque notes created. Individual salaries never touched the chain.`}
+          />
+          <a
+            href={`${EXPLORER_BASE}/${PAYROLL_CONTRACT_ID}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-emerald-600 dark:text-emerald-400 underline mt-2 inline-block"
+          >
+            View on Stellar Expert →
+          </a>
 
           {/* Per-recipient delivery */}
           <div className="border-t border-emerald-200 dark:border-emerald-800 pt-4 flex flex-col gap-3">
@@ -333,55 +331,55 @@ export default function EmployerPage() {
               against the on-chain commitment. Generate a key pair at{" "}
               <a href="/auditor" className="underline">/auditor</a>.
             </p>
-            <input
+            <InputField
               type="text"
               placeholder="Auditor public key (64 hex chars)"
               value={auditorPubKey}
               onChange={(e) => setAuditorPubKey(e.target.value)}
-              className="rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-mono placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              error={encryptError}
+              className="text-xs font-mono"
             />
-            {encryptError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{encryptError}</p>
-            )}
-            <button
+            <Button
+              variant="secondary"
               onClick={exportViewKey}
               disabled={encrypting || !auditorPubKey}
-              className="self-start px-4 py-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 text-xs font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900 disabled:opacity-40 transition-colors"
+              loading={encrypting}
+              className="self-start text-xs"
             >
               {encrypting ? "Encrypting…" : "Encrypt & download packet"}
-            </button>
+            </Button>
           </div>
-        </div>
-      )}
-
-      {step === "error" && (
-        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-4">
-          <p className="text-sm text-red-700 dark:text-red-300">{statusMsg}</p>
-        </div>
+        </Card>
       )}
 
       {busy && (
-        <p className="text-sm text-zinc-500 flex items-center gap-2">
-          <span className="animate-spin inline-block">⟳</span> {statusMsg}
-        </p>
+        <>
+          <ProgressSteps steps={["Generate proof", "Sign transaction", "Submit to chain"]} currentStep={step === "proving" ? 0 : step === "signing" ? 1 : 2} />
+          <LoadingSpinner text={statusMsg} />
+        </>
+      )}
+
+      {step === "error" && (
+        <ErrorBox
+          message={statusMsg}
+          onRetry={() => setStep("idle")}
+          onDismiss={() => setStep("idle")}
+        />
       )}
 
       {step === "idle" && statusMsg && (
-        <p className="text-sm text-red-600">{statusMsg}</p>
+        <ErrorBox message={statusMsg} onDismiss={() => setStatusMsg("")} />
       )}
 
-      <button
+      <Button
         onClick={runPayroll}
         disabled={busy}
-        className="self-start px-6 py-2.5 rounded-lg bg-emerald-500 text-[#070b0a] text-sm font-medium hover:bg-emerald-400 disabled:opacity-50 transition-colors"
+        loading={busy}
       >
         {!address
           ? "Connect wallet to continue"
-          : step === "proving" ? "Generating proof…"
-          : step === "signing" ? "Sign in wallet…"
-          : step === "submitting" ? "Submitting…"
           : "Run confidential payroll"}
-      </button>
+      </Button>
     </div>
   );
 }

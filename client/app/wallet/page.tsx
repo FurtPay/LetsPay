@@ -24,6 +24,8 @@ import {
 } from "@/lib/zk/confidentialWallet";
 import { generateViewingKeyPair, decryptNote } from "@/lib/zk/noteCrypto";
 import { bytesToHex, hexToBytes } from "@/lib/zk/viewKey";
+import { LoadingSpinner, EmptyState, ErrorBox, SuccessBox, Card, InputField, Button } from "@/app/components/ui";
+import { Wallet as WalletIcon } from "lucide-react";
 
 const TOKENS: Record<string, string> = { XLM: XLM_SAC, USDC: USDC_SAC };
 
@@ -392,17 +394,14 @@ export default function WalletPage() {
 
   if (!address) {
     return (
-      <div className="mx-auto max-w-2xl px-6 py-24 flex flex-col items-center gap-4 text-center">
-        <p className="text-zinc-500 dark:text-zinc-400">
-          Connect your wallet to view your confidential balance.
-        </p>
-        <button
-          onClick={connect}
-          className="px-5 py-2.5 rounded-lg bg-emerald-500 text-[#070b0a] text-sm font-medium hover:bg-emerald-400 transition-colors"
-        >
-          Connect Wallet
-        </button>
-      </div>
+      <EmptyState
+        icon={WalletIcon}
+        title="Connect your wallet"
+        description="Connect your wallet to view your confidential balance and manage private payments."
+        action={
+          <Button onClick={connect}>Connect Wallet</Button>
+        }
+      />
     );
   }
 
@@ -427,22 +426,24 @@ export default function WalletPage() {
         </select>
       </div>
 
-      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 flex flex-col gap-1">
-        <span className="text-xs text-zinc-400">Confidential balance ({tokenSymbol})</span>
-        <span className="text-2xl font-semibold tabular-nums">
-          {record ? stroopsToXlm(BigInt(record.balance)) : "0"} {tokenSymbol}
-        </span>
-        {record && (
-          <span className="text-xs text-zinc-400 mt-1">
-            Last updated {new Date(record.updatedAt).toLocaleString()} — known only on this device
+      <Card>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-zinc-400">Confidential balance ({tokenSymbol})</span>
+          <span className="text-2xl font-semibold tabular-nums">
+            {record ? stroopsToXlm(BigInt(record.balance)) : "0"} {tokenSymbol}
           </span>
-        )}
-        {!record && (
-          <span className="text-xs text-zinc-400 mt-1">
-            No confidential balance yet on this device — deposit below, or restore from a backup file.
-          </span>
-        )}
-      </div>
+          {record && (
+            <span className="text-xs text-zinc-400 mt-1">
+              Last updated {new Date(record.updatedAt).toLocaleString()} — known only on this device
+            </span>
+          )}
+          {!record && (
+            <span className="text-xs text-zinc-400 mt-1">
+              No confidential balance yet on this device — deposit below, or restore from a backup file.
+            </span>
+          )}
+        </div>
+      </Card>
 
       {/* Pending pay (auto-received notes) */}
       {pending.length > 0 && (
@@ -474,48 +475,56 @@ export default function WalletPage() {
 
       {/* Auto-receive enrollment */}
       {!viewingKey ? (
-        <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 flex flex-col gap-2">
-          <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Enable auto-receive</h2>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            Register a viewing key once so employers can pay you confidentially and the funds show
-            up here automatically — no copy-pasting claim secrets. Your viewing key is backed up to a file.
-          </p>
-          <button onClick={enableAutoReceive} className={secondaryBtn}>Enable auto-receive</button>
-        </section>
+        <Card className="border-zinc-200 dark:border-zinc-800">
+          <div className="flex flex-col gap-2">
+            <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Enable auto-receive</h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Register a viewing key once so employers can pay you confidentially and the funds show
+              up here automatically — no copy-pasting claim secrets. Your viewing key is backed up to a file.
+            </p>
+            <Button variant="secondary" onClick={enableAutoReceive}>Enable auto-receive</Button>
+          </div>
+        </Card>
       ) : (
-        <p className="text-xs text-zinc-400">
-          Auto-receive on{scanning ? " · scanning for pending pay…" : ""} — confidential payments
-          land here automatically.
-        </p>
+        <SuccessBox
+          message="Auto-receive enabled"
+          subtext={scanning ? "Scanning for pending pay…" : "Confidential payments land here automatically."}
+        />
       )}
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Deposit (shield)</h2>
         <div className="flex gap-2">
-          <input
-            type="number" min="0.01" step="0.01" placeholder="0.00"
+          <InputField
+            type="number"
+            min="0.01"
+            step="0.01"
+            placeholder="0.00"
             value={depositAmount}
             onChange={(e) => setDepositAmount(e.target.value)}
-            className={inputCls}
+            className="flex-1"
           />
-          <button onClick={deposit} disabled={busy || !depositAmount} className={primaryBtn}>
+          <Button onClick={deposit} disabled={busy || !depositAmount} loading={step === "proving" || step === "signing" || step === "submitting"}>
             Deposit
-          </button>
+          </Button>
         </div>
       </section>
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Withdraw (deshield)</h2>
         <div className="flex gap-2">
-          <input
-            type="number" min="0.01" step="0.01" placeholder="0.00"
+          <InputField
+            type="number"
+            min="0.01"
+            step="0.01"
+            placeholder="0.00"
             value={withdrawAmount}
             onChange={(e) => setWithdrawAmount(e.target.value)}
-            className={inputCls}
+            className="flex-1"
           />
-          <button onClick={withdraw} disabled={busy || !withdrawAmount || !record} className={primaryBtn}>
+          <Button onClick={withdraw} disabled={busy || !withdrawAmount || !record} loading={step === "proving" || step === "signing" || step === "submitting"}>
             Withdraw
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -530,14 +539,14 @@ export default function WalletPage() {
       </section>
 
       {step === "error" && (
-        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-4">
-          <p className="text-sm text-red-700 dark:text-red-300">{statusMsg}</p>
-        </div>
+        <ErrorBox
+          message={statusMsg}
+          onRetry={() => setStep("idle")}
+          onDismiss={() => setStep("idle")}
+        />
       )}
       {busy && (
-        <p className="text-sm text-zinc-500 flex items-center gap-2">
-          <span className="animate-spin inline-block">⟳</span> {statusMsg}
-        </p>
+        <LoadingSpinner text={statusMsg} />
       )}
     </div>
   );
