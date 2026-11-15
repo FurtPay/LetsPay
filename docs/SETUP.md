@@ -1,381 +1,283 @@
-# Payfurt — Setup & Deployment Guide
+# LetsPay (Payfurt) — Local Development Setup Guide
+
+This guide walks through setting up the complete LetsPay local development environment from a clean checkout, including Rust/Soroban contracts, Circom BLS12-381 zero-knowledge circuits, the Next.js frontend, unit/fixture tests, and end-to-end (E2E) verification scripts.
 
 ---
 
-## Prerequisites
+## 1. Prerequisites & Required Versions
 
-| Tool | Version | Install |
-|---|---|---|
-| Rust + `wasm32v1-none` target | stable | `rustup target add wasm32v1-none` |
-| Stellar CLI | ≥ 25.x | `cargo install --locked stellar-cli --features opt` |
-| Circom | 2.1.x | `npm install -g circom` |
-| Node.js | ≥ 20 | [nodejs.org](https://nodejs.org) |
-| pnpm | ≥ 9 | `npm install -g pnpm` |
+Install the following tools before starting:
+
+| Tool | Required Version | Purpose | Installation Command / Link |
+|---|---|---|---|
+| **Node.js** | `>= 20.x` (LTS recommended) | Next.js 16 frontend, `snarkjs` witness/prover, and `tsx` E2E scripts | [nodejs.org](https://nodejs.org/) or `nvm install 20` |
+| **pnpm** | `>= 9.x` | Workspace package manager (**required** — `npm install` is unsupported) | `npm install -g pnpm` |
+| **Rust & Cargo** | Latest stable (`>= 1.84`) + `wasm32v1-none` target | Compiling Soroban smart contracts (`soroban-sdk = "25.3.0"`) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` then `rustup target add wasm32v1-none` |
+| **Stellar CLI** | `>= 25.x` | Building/optimizing Soroban WASM (CAP-0059 BLS12-381 host functions), deploying, and generating TS bindings | `cargo install --locked stellar-cli --features opt` |
+| **Circom 2** | `2.1.6+` (Rust binary) | Compiling `.circom` circuits over the BLS12-381 scalar field (`--prime bls12381`) | Build from [iden3/circom](https://docs.circom.io/getting-started/installation/): `git clone https://github.com/iden3/circom.git && cd circom && cargo build --release && cargo install --path circom` |
+| **snarkjs** | `^0.7.5` (installed via `pnpm`) | Powers-of-Tau ceremony, Groth16 `.zkey` generation, and browser proving | Installed automatically in `circuits/` and `client/` via `pnpm install` |
+| **Python 3** | `>= 3.9` | JSON parsing and TypeScript binding deduplication in helper scripts | Pre-installed on macOS/Linux or [python.org](https://www.python.org/) |
+
+Verify all tools are available on your `PATH`:
 
 ```bash
-rustc --version && stellar --version && circom --version && node --version && pnpm --version
+rustc --version && \
+rustup target list --installed | grep wasm32v1-none && \
+stellar --version && \
+circom --version && \
+node --version && \
+pnpm --version && \
+python3 --version
 ```
+
+> **Important:** Make sure `circom --version` reports `2.1.x` (the Rust compiler from `iden3/circom`), **not** the deprecated `0.5.x` JavaScript package from `npm install -g circom`. Only Circom `2.1+` supports `--prime bls12381`.
 
 ---
 
-## Repository structure
+## 2. Repository Structure
 
-```
-payfurt/
+```text
+LetsPay/
 ├── circuits/
-│   ├── deposit_new.circom          # first-ever confidential deposit
-│   ├── deposit_topup.circom        # subsequent deposit (old commitment required)
-│   ├── withdraw.circom             # deshield
-│   ├── escrow_lock.circom          # payer locks into confidential escrow
-│   ├── escrow_settle.circom        # payee claims (existing balance)
-│   ├── escrow_settle_new.circom    # payee claims (first balance)
-│   ├── escrow_cancel.circom        # payer reclaims
-│   ├── payroll_notes.circom        # confidential payroll — note model, 10 slots
-│   ├── minimum_wage.circom         # ∀ active salary ≥ min_wage
-│   ├── pay_equity.circom           # |avgA − avgB| ≤ epsilon
-│   ├── income_proof.circom         # Σ active notes ≥ threshold
-│   └── salary_bracket.circom       # salary ∈ [low, high], note-anchored
+│   ├── deposit_new.circom          # First-ever confidential deposit
+│   ├── deposit_topup.circom        # Subsequent deposit (old commitment required)
+│   ├── withdraw.circom             # Deshield (balance decreases, remains >= 0)
+│   ├── escrow_lock.circom          # Payer locks confidential balance into escrow
+│   ├── escrow_settle.circom        # Payee claims escrow (existing confidential balance)
+│   ├── escrow_settle_new.circom    # Payee claims escrow (first confidential balance)
+│   ├── escrow_cancel.circom        # Payer reclaims cancelled escrow
+│   ├── payroll_notes.circom        # Confidential batch payroll — note model (10 slots)
+│   ├── minimum_wage.circom         # Prove all active salaries >= min_wage
+│   ├── pay_equity.circom           # Prove |avgA - avgB| <= epsilon
+│   ├── income_proof.circom         # Prove sum of active notes >= threshold (8 slots)
+│   └── salary_bracket.circom       # Prove note salary in [bracket_low, bracket_high]
 ├── contracts/
-│   ├── payroll_verifier/           # ledger, escrow, payroll, auto-receive, Groth16 verifier
-│   └── salary_bracket_verifier/    # attestations + cross-call to payroll
+│   ├── payroll_verifier/           # Confidential ledger, escrow, payroll, auto-receive, Groth16 verifier
+│   └── salary_bracket_verifier/    # Compliance attestations + cross-contract batch queries
 ├── client/
-│   ├── app/
-│   │   ├── page.tsx                # landing
-│   │   ├── wallet/page.tsx         # deposit/withdraw, auto-receive, claim
-│   │   ├── employer/page.tsx       # confidential payroll + auditor export
-│   │   ├── invoice/page.tsx        # confidential escrow: lock / settle
-│   │   ├── attest/page.tsx         # min-wage, pay-equity, income attestations
-│   │   ├── auditor/page.tsx        # decrypt + verify salary packet
-│   │   ├── history/page.tsx        # attestation trail
-│   │   └── verify/page.tsx         # read-only note commitment checker
+│   ├── app/                        # Next.js 16 App Router pages (/wallet, /employer, /invoice, /attest, /auditor, /history, /verify)
 │   ├── lib/
-│   │   ├── stellar/
-│   │   │   ├── config.ts           # all env vars
-│   │   │   ├── contract.ts         # makePayrollClient
-│   │   │   ├── bracketContract.ts  # makeBracketClient
-│   │   │   └── wallet.tsx          # WalletProvider (Stellar Wallets Kit)
-│   │   ├── zk/
-│   │   │   ├── depositProof.ts
-│   │   │   ├── withdrawProof.ts
-│   │   │   ├── escrowProof.ts
-│   │   │   ├── payrollNotesProof.ts
-│   │   │   ├── attestationProof.ts
-│   │   │   ├── noteCrypto.ts       # x25519 ECDH note encryption/decryption
-│   │   │   ├── viewKey.ts          # auditor AES-GCM view-key packet
-│   │   │   ├── confidentialWallet.ts # localStorage secret manager
-│   │   │   └── groth16Codec.ts
-│   │   └── bindings/               # auto-generated Stellar SDK types
-│   ├── public/circuits/            # .wasm + .zkey files (copied by ceremony script)
-│   ├── .env.example
-│   └── .env.local                  # your values (gitignored)
-├── scripts/
-│   ├── setup_ceremony.sh           # compile circuit → zkey → export VK
-│   ├── deploy.sh                   # build + deploy payroll_verifier
-│   ├── deploy_sbv.sh               # build + deploy salary_bracket_verifier
-│   ├── init_sbv.ts                 # initialize SBV (VK + payroll contract address)
-│   ├── set_attestation_vks.ts      # set min_wage / pay_equity / income VKs on SBV
-│   ├── add_tokens.sh               # add tokens to allowlist
-│   ├── e2e_confidential.ts         # ledger: deposit → top-up → withdraw (also sets all VKs)
-│   ├── e2e_invoice_confidential.ts # invoice: lock → settle → withdraw
-│   ├── e2e_payroll_confidential.ts # payroll: disburse → 3 claims → withdraw
-│   ├── e2e_autoreceive.ts          # auto-receive end-to-end
-│   ├── e2e_stealth.ts              # stealth recipient end-to-end
-│   ├── e2e_attestations.ts         # min-wage + pay-equity attestations
-│   ├── e2e_income_only.ts          # income proof (separate — polls for RPC lag)
-│   └── e2e_bracket_confidential.ts # salary bracket proof
-└── deployments/testnet.json        # live contract IDs + token SACs
+│   │   ├── stellar/                # Runtime env config, contract clients, Stellar Wallets Kit provider
+│   │   ├── zk/                     # Browser Groth16 proof generators, x25519 ECDH note crypto, view keys
+│   │   └── bindings/               # Generated TypeScript contract bindings
+│   ├── public/circuits/            # Browser .wasm, .zkey, and _vk.json artifacts
+│   └── .env.example                # Frontend environment variable template
+├── scripts/                        # Ceremony, deployment, fixture generation, and E2E scripts
+└── deployments/testnet.json        # Active Stellar Testnet contract IDs & token SACs
 ```
 
 ---
 
-## 1. Install dependencies
+## 3. Install Dependencies
+
+Clone the repository and install dependencies across all three workspace packages (`root`, `circuits`, and `client`):
 
 ```bash
-# Circuit dependencies (circomlib)
+git clone https://github.com/FurtPay/LetsPay.git
+cd LetsPay
+
+# 1. Root script dependencies (tsx + @stellar/stellar-sdk for E2E & fixture scripts)
+pnpm install
+
+# 2. Circuit dependencies (circomlib + snarkjs)
 cd circuits && pnpm install && cd ..
 
-# Frontend
+# 3. Frontend dependencies (Next.js 16, React 19, Stellar Wallets Kit, noble crypto)
 cd client && pnpm install && cd ..
-
-# Script runner (tsx + stellar-sdk for e2e scripts)
-pnpm install
 ```
 
 ---
 
-## 2. Run ZK ceremonies
+## 4. Environment Variables
 
-Each ceremony compiles a circuit over BLS12-381, runs a Powers-of-Tau phase 1 (shared, generated once), runs a circuit-specific phase 2, exports a `.zkey` and a `_vk.json`, and copies the `.wasm` + `.zkey` to `client/public/circuits/` for browser use.
-
-> **Time budget:** small circuits (`deposit_new`, `withdraw`, etc.) finish in 3–5 min each. `payroll_notes` has 15 public signals and ~50k constraints — `groth16 setup` takes **20–40 min** on a standard laptop. Run it first and let it finish before continuing. All 12 ceremonies together take roughly 2 hours on first run.
-
-> **Package manager:** the project uses **pnpm** throughout. `npm install` will fail. Install pnpm with `npm install -g pnpm` if it is not already available.
-
-```bash
-# Confidential ledger
-bash scripts/setup_ceremony.sh deposit_new
-bash scripts/setup_ceremony.sh deposit_topup
-bash scripts/setup_ceremony.sh withdraw
-
-# Invoice escrow
-bash scripts/setup_ceremony.sh escrow_lock
-bash scripts/setup_ceremony.sh escrow_settle
-bash scripts/setup_ceremony.sh escrow_settle_new
-bash scripts/setup_ceremony.sh escrow_cancel
-
-# Confidential payroll (slowest — run first, allow 20–40 min for groth16 setup)
-bash scripts/setup_ceremony.sh payroll_notes
-
-# Attestations
-bash scripts/setup_ceremony.sh minimum_wage
-bash scripts/setup_ceremony.sh pay_equity
-bash scripts/setup_ceremony.sh income_proof
-
-# Salary bracket (note-anchored)
-bash scripts/setup_ceremony.sh salary_bracket
-```
-
-Expected outputs per circuit:
-
-```
-circuits/build/<name>.r1cs
-circuits/build/<name>.zkey
-circuits/build/<name>_vk.json
-circuits/build/<name>_js/<name>.wasm
-client/public/circuits/<name>.wasm
-client/public/circuits/<name>.zkey
-```
-
-> These are dev-ceremony keys (single local contribution). Run a proper multi-party ceremony before mainnet.
-
----
-
-## 3. Configure a Stellar identity
-
-```bash
-stellar keys generate maylord --network testnet
-stellar keys fund maylord --network testnet
-stellar account show $(stellar keys address maylord) --network testnet
-```
-
----
-
-## 4. Deploy contracts
-
-### 4a. payroll_verifier
-
-```bash
-bash scripts/deploy.sh testnet maylord
-```
-
-Builds the Rust contract, deploys to testnet, initializes it (admin + VKs for ledger, escrow, and payroll circuits), and writes the contract ID to `deployments/testnet.json`.
-
-### 4b. salary_bracket_verifier
-
-```bash
-bash scripts/deploy_sbv.sh testnet maylord
-```
-
-Builds, deploys, and initializes the SBV with its salary bracket VK and the payroll contract address. Also sets the attestation VKs for `minimum_wage`, `pay_equity`, and `income_proof`.
-
----
-
-## 5. Environment variables
+Copy `client/.env.example` to `client/.env.local`:
 
 ```bash
 cp client/.env.example client/.env.local
 ```
 
-Fill in `client/.env.local`:
+### Frontend Environment Variables (`client/.env.local`)
 
-```env
-NEXT_PUBLIC_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
-NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-NEXT_PUBLIC_PAYROLL_CONTRACT_ID=<from deployments/testnet.json>
-NEXT_PUBLIC_SBV_CONTRACT_ID=<from deployments/testnet.json>
-NEXT_PUBLIC_XLM_SAC=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
-NEXT_PUBLIC_USDC_SAC=CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
-```
+All frontend configuration is read at runtime in `client/lib/stellar/config.ts`:
 
-All contract IDs are read from env at runtime — nothing is hardcoded in source.
+| Variable | Required | Default / Testnet Value | Description |
+|---|---|---|---|
+| `NEXT_PUBLIC_STELLAR_RPC_URL` | Yes | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint used for transaction simulation, submission, and ledger queries. |
+| `NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE` | Yes | `Test SDF Network ; September 2015` | Stellar network passphrase used when signing transactions. |
+| `NEXT_PUBLIC_PAYROLL_CONTRACT_ID` | Yes | `CDTL5N2EKQM7DA7UVU7EQ66FJJ6HPDAHFKNJR4BS2BUYOHFBAJUBG4XL` | Deployed `payroll_verifier` contract ID (matches `deployments/testnet.json`). |
+| `NEXT_PUBLIC_SBV_CONTRACT_ID` | Yes | `CCIWKQCR3PHRBE5M6JJAUFTQOYKFQE5JNTGMX5NBERIDYNQOQRRKFEQR` | Deployed `salary_bracket_verifier` contract ID (matches `deployments/testnet.json`). |
+| `NEXT_PUBLIC_XLM_SAC` | Yes | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` | Stellar Asset Contract (SAC) address for native XLM on Testnet. |
+| `NEXT_PUBLIC_USDC_SAC` | Yes | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | Stellar Asset Contract (SAC) address for Circle Testnet USDC. |
 
----
+### CLI & E2E Script Environment Variables
 
-## 6. Generate TypeScript bindings
+When running deployment or E2E scripts in `scripts/`, the following shell environment variables are used:
 
-Run after every deploy. Each bindings file needs a one-line dedupe patch to remove a duplicate `DataKey`/`Errors` enum that the CLI pulls in from the cross-contract ABI.
-
-```bash
-PV_ID=$(python3 -c "import json; print(json.load(open('deployments/testnet.json'))['payroll_verifier'])")
-stellar contract bindings typescript \
-  --contract-id "$PV_ID" --network testnet \
-  --output-dir client/lib/bindings/payroll_verifier --overwrite
-
-SBV_ID=$(python3 -c "import json; print(json.load(open('deployments/testnet.json'))['salary_bracket_verifier'])")
-stellar contract bindings typescript \
-  --contract-id "$SBV_ID" --network testnet \
-  --output-dir client/lib/bindings/salary_bracket_verifier --overwrite
-```
-
-If the SBV bindings contain a duplicated `DataKey` or `Errors` type (both the SBV's own and the payroll's pulled in via cross-contract ABI), remove the second occurrence with a Python one-liner:
-
-```bash
-python3 -c "
-import re, pathlib
-f = pathlib.Path('client/lib/bindings/salary_bracket_verifier/src/index.ts')
-txt = f.read_text()
-# Remove second DataKey block
-txt = re.sub(r'(export type DataKey = .*?;)\n\n\1', r'\1', txt, flags=re.DOTALL)
-f.write_text(txt)
-"
-```
+| Variable | Used By | Description |
+|---|---|---|
+| `SECRET_KEY` | `scripts/e2e_*.ts`, `scripts/init_sbv.ts`, `scripts/set_attestation_vks.ts` | Stellar secret key (`S...`) of the funded Testnet account (e.g. `export SECRET_KEY=$(stellar keys secret maylord)`). |
+| `STELLAR_IDENTITY` | `scripts/deploy.sh`, `scripts/deploy_sbv.sh`, `scripts/add_tokens.sh` | Optional Stellar CLI identity name (defaults to `maylord` if omitted). |
 
 ---
 
-## 7. Initialize salary_bracket_verifier
+## 5. Frontend Startup
 
-If `deploy_sbv.sh` couldn't initialize automatically (bindings not yet generated at that point):
+Because `client/public/circuits/` already includes pre-generated `.wasm`, `.zkey`, and `_vk.json` development ceremony artifacts and `deployments/testnet.json` points to live Testnet contracts, you can start the frontend immediately after configuring `client/.env.local`:
 
 ```bash
-SECRET_KEY=$(stellar keys secret maylord) pnpm exec tsx scripts/init_sbv.ts
-SECRET_KEY=$(stellar keys secret maylord) pnpm exec tsx scripts/set_attestation_vks.ts
+cd client
+pnpm dev
 ```
+
+Open [http://localhost:3000](http://localhost:3000) in a browser with a Stellar wallet extension installed (Freighter, LOBSTR, or xBull) switched to **Testnet**.
+
+### Frontend Commands Reference
+
+```bash
+cd client
+pnpm dev      # Start Next.js 16 development server on http://localhost:3000
+pnpm build    # Build production bundle and run TypeScript typechecking
+pnpm start    # Serve production build locally
+pnpm lint     # Run ESLint across client/
+```
+
+### Application Routes
+
+| Route | Description |
+|---|---|
+| `/` | Landing page and protocol overview |
+| `/wallet` | Confidential wallet: shield (`deposit_new` / `deposit_topup`), deshield (`withdraw`), enrol x25519 viewing key, and one-click claim pending notes |
+| `/employer` | Confidential batch payroll: generate `payroll_notes` Groth16 proof in browser, ECDH-encrypt notes, disburse, and export auditor view-key packet |
+| `/invoice` | Confidential invoice escrow: payer locks shielded funds (`escrow_lock`); contractor settles (`escrow_settle` / `escrow_settle_new`) |
+| `/attest` | Employer compliance attestations (`minimum_wage`, `pay_equity`) and employee `income_proof` |
+| `/auditor` | Generate auditor x25519 key pair; decrypt and verify employer salary packets against on-chain commitment |
+| `/history` | On-chain attestation and batch payment history |
+| `/verify` | Read-only verifier to inspect note commitments against on-chain escrow records |
 
 ---
 
-## 8. Fixture-based proof tests
+## 6. Smart Contract Build & Test Commands
 
-After the ceremonies are complete, generate pre-computed proof fixtures and run the Rust proof tests. These tests verify a real Groth16 proof against the real verifying key inside the Soroban testutils environment — without needing an RPC connection or a live deployment.
+### Build Contracts for Soroban (`wasm32v1-none`)
 
 ```bash
-# Generate one fixture JSON per circuit (~5 min, uses existing .zkey and .wasm files)
+# Build all workspace contracts
+cargo build --workspace
+
+# Build optimized WASM binaries using Stellar CLI
+stellar contract build --manifest-path contracts/payroll_verifier/Cargo.toml --optimize
+stellar contract build --manifest-path contracts/salary_bracket_verifier/Cargo.toml --optimize
+```
+
+### Run Contract Unit Tests
+
+```bash
+# Run all unit tests across both contracts
+cargo test --workspace
+
+# Run payroll_verifier unit tests only
+cargo test -p payroll_verifier
+
+# Run salary_bracket_verifier unit tests only
+cargo test -p salary_bracket_verifier
+```
+
+### Run Fixture-Based Groth16 Proof Verification Tests
+
+`contracts/payroll_verifier` includes real Groth16 pairing verification tests executed inside the Soroban `testutils` host environment:
+
+```bash
+# (Optional) Regenerate fixture JSONs in contracts/payroll_verifier/tests/fixtures/
+# Requires circuit artifacts in circuits/build/
 pnpm exec tsx scripts/generate_fixtures.ts
 
-# Run the fixture-based proof tests
+# Execute the on-chain Groth16 proof verification tests
 cargo test -p payroll_verifier proof
 ```
 
-Each fixture is saved to `contracts/payroll_verifier/tests/fixtures/<circuit>.json` and contains the proof (π_A, π_B, π_C), the verifying key, and the public signals — all hex-encoded in the ZCash BE layout that Soroban expects. Commit the `tests/fixtures/` directory so CI can run these tests without re-running the ceremonies.
+---
 
-If a fixture file is missing (ceremony not yet run), the corresponding test prints a skip notice and passes — it never fails on a missing file.
+## 7. Building ZK Circuits & Running Ceremonies (Optional for Local Changes)
+
+If you modify any `.circom` file in `circuits/`, re-run its BLS12-381 compilation and Groth16 phase-2 ceremony:
+
+```bash
+# Confidential ledger circuits
+bash scripts/setup_ceremony.sh deposit_new
+bash scripts/setup_ceremony.sh deposit_topup
+bash scripts/setup_ceremony.sh withdraw
+
+# Invoice escrow circuits
+bash scripts/setup_ceremony.sh escrow_lock
+bash scripts/setup_ceremony.sh escrow_settle
+bash scripts/setup_ceremony.sh escrow_settle_new
+bash scripts/setup_ceremony.sh escrow_cancel
+
+# Confidential batch payroll (~50k constraints; allow 20–40 min)
+bash scripts/setup_ceremony.sh payroll_notes
+
+# Compliance & income attestation circuits
+bash scripts/setup_ceremony.sh minimum_wage
+bash scripts/setup_ceremony.sh pay_equity
+bash scripts/setup_ceremony.sh income_proof
+bash scripts/setup_ceremony.sh salary_bracket
+```
+
+Each run outputs `.r1cs`, `.wasm`, `.zkey`, and `_vk.json` into `circuits/build/` and automatically copies the browser proving artifacts to `client/public/circuits/`.
 
 ---
 
-## 9. End-to-end verification
+## 8. End-to-End (E2E) Testnet Commands
 
-Run each script to confirm a full proof → on-chain verify → state update round-trip on testnet. `e2e_confidential.ts` also sets every VK on `payroll_verifier` as a side effect.
+To run the automated E2E scripts against Stellar Testnet:
+
+1. Create and fund a Stellar Testnet identity:
 
 ```bash
+stellar keys generate maylord --network testnet
+stellar keys fund maylord --network testnet
 export SECRET_KEY=$(stellar keys secret maylord)
+```
 
-pnpm exec tsx scripts/e2e_confidential.ts          # ledger (also sets all VKs)
+2. Execute the E2E verification suites from the repository root:
+
+```bash
+# 1. Confidential ledger: deposit_new -> deposit_topup -> withdraw (also uploads VKs if admin)
+pnpm exec tsx scripts/e2e_confidential.ts
+
+# 2. Confidential invoice escrow: escrow_lock -> escrow_settle -> withdraw
 pnpm exec tsx scripts/e2e_invoice_confidential.ts
+
+# 3. Confidential payroll batch: disburse_confidential -> 3 recipient claims -> withdraw
 pnpm exec tsx scripts/e2e_payroll_confidential.ts
+
+# 4. Auto-receive: register x25519 viewing key -> encrypted note -> auto-decrypt -> claim
 pnpm exec tsx scripts/e2e_autoreceive.ts
+
+# 5. Stealth recipient address payment & claim
 pnpm exec tsx scripts/e2e_stealth.ts
+
+# 6. Compliance attestations: minimum_wage & pay_equity
 pnpm exec tsx scripts/e2e_attestations.ts
-pnpm exec tsx scripts/e2e_income_only.ts           # income proof (separate — RPC lag)
+
+# 7. Employee cumulative income attestation (polls for Soroban RPC indexing lag)
+pnpm exec tsx scripts/e2e_income_only.ts
+
+# 8. Salary bracket proof verification
 pnpm exec tsx scripts/e2e_bracket_confidential.ts
 ```
 
 ---
 
-## 10. Add tokens to allowlist
+## 9. Common Setup Errors & Troubleshooting
 
-```bash
-bash scripts/add_tokens.sh testnet maylord
-```
-
-Adds USDC. EURC is skipped on testnet (no official Circle testnet issuer).
-
----
-
-## 11. Run the frontend
-
-```bash
-cd client && pnpm dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-**Routes:**
-
-| Route | Description |
-|---|---|
-| `/` | Landing page |
-| `/wallet` | Confidential balance: deposit, withdraw, enable auto-receive, claim pending pay |
-| `/employer` | Confidential payroll: ZK proof in browser → disburse → auditor view-key export |
-| `/invoice` | Confidential invoice escrow: payer locks; contractor settles |
-| `/attest` | Employer: minimum-wage + pay-equity attestations. Employee: income proof |
-| `/auditor` | Generate x25519 key pair; decrypt + verify encrypted salary packet |
-| `/history` | Attestation trail for the connected wallet |
-| `/verify` | Read-only: check a note commitment against an on-chain escrow |
-
----
-
-## Live testnet deployment
-
-| Resource | Value |
-|---|---|
-| `payroll_verifier` | `CDTL5N2EKQM7DA7UVU7EQ66FJJ6HPDAHFKNJR4BS2BUYOHFBAJUBG4XL` |
-| `salary_bracket_verifier` | `CCIWKQCR3PHRBE5M6JJAUFTQOYKFQE5JNTGMX5NBERIDYNQOQRRKFEQR` |
-| Network | Stellar Testnet |
-| XLM SAC | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
-| USDC SAC | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
-| Explorer | [stellar.expert →](https://stellar.expert/explorer/testnet/contract/CDTL5N2EKQM7DA7UVU7EQ66FJJ6HPDAHFKNJR4BS2BUYOHFBAJUBG4XL) |
-
-> The contract is redeployed fresh on each change (the 7-day upgrade timelock makes in-place upgrades impractical under a hackathon timeline). Always read the current IDs from `deployments/testnet.json`. Redeploying `payroll_verifier` forces a `salary_bracket_verifier` redeploy too since SBV cross-calls payroll by address.
-
----
-
-## Circuit signal reference
-
-### Confidential ledger
-
-| Circuit | IC len | Signals (output-first) |
+| Symptom / Error | Root Cause | Resolution |
 |---|---|---|
-| `deposit_new` | 3 | `[commitment, amount]` |
-| `deposit_topup` | 4 | `[new_commitment, old_commitment, amount]` |
-| `withdraw` | 4 | `[new_commitment, old_commitment, amount]` |
-
-### Confidential escrow
-
-| Circuit | IC len | Signals (output-first) |
-|---|---|---|
-| `escrow_lock` | 4 | `[new_commitment, escrow_commitment, old_commitment]` |
-| `escrow_settle` | 6 | `[payee_new_commitment, escrow_commitment, invoice_min, invoice_max, payee_old_commitment]` |
-| `escrow_settle_new` | 5 | `[payee_commitment, escrow_commitment, invoice_min, invoice_max]` |
-| `escrow_cancel` | 4 | `[new_commitment, escrow_commitment, old_commitment]` |
-
-### Confidential payroll
-
-| Circuit | IC len | Signals (output-first) |
-|---|---|---|
-| `payroll_notes` | 15 | `[payroll_commitment, note_commitment[0..9], total_budget, max_salary, active_count]` |
-
-### Attestations
-
-| Circuit | IC len | Signals (output-first) | Key constraint |
-|---|---|---|---|
-| `minimum_wage` | 4 | `[payroll_commitment, min_wage, active_count]` | ∀ active i: `sal[i] >= min_wage` |
-| `pay_equity` | 4 | `[payroll_commitment, epsilon, active_count]` | `\|sumA·cntB − sumB·cntA\| <= epsilon·cntA·cntB` |
-| `income_proof` | 10 | `[note_commitment[0..7], threshold]` | `Σ active amount >= threshold` |
-
-### Salary bracket
-
-| Circuit | IC len | Signals (output-first) |
-|---|---|---|
-| `salary_bracket` | 4 | `[note_commitment, bracket_low, bracket_high]` |
-
-> **BN254 vs BLS12-381:** All circuits are compiled with `--prime bls12381`. Commitments are Poseidon over the BLS12-381 scalar field. `circomlibjs` hardcodes BN254 — never use it to recompute commitments. Always carry the last-known `commitmentDecimal` from `groth16.fullProve` output.
-
----
-
-## Security notes
-
-- All ZK keys are dev-ceremony (single local contribution). Run a proper multi-party ceremony for mainnet.
-- Contract upgrade is timelocked (7-day delay via `propose_upgrade → execute_upgrade`).
-- Payroll commitments are employer-scoped nullifiers — cannot be replayed.
-- CEI pattern is enforced in all escrow and ledger flows (state written before any outbound transfer).
-- Soroban persistent storage entries are TTL-bumped on every access.
-- The confidential wallet backup file is the sole recovery path for shielded funds. Losing it with no copy is equivalent to losing a seed phrase.
+| `Unknown argument: --prime` when running `circom` | You have the legacy JavaScript `circom` (`0.5.x`) installed via `npm install -g circom` instead of the Rust Circom `2.1.x` compiler. | Uninstall the npm package (`npm uninstall -g circom`) and install Circom `2.1.6+` from source via Cargo (`cargo install --path circom`), ensuring `~/.cargo/bin` precedes `/usr/local/bin` in `PATH`. |
+| `circomlib missing: (cd circuits && pnpm add -D circomlib snarkjs)` | `circuits/node_modules` has not been installed yet. | Run `cd circuits && pnpm install && cd ..` before invoking `bash scripts/setup_ceremony.sh`. |
+| On-chain verification fails with `InvalidProof` / commitment mismatch after computing Poseidon in JS | `circomlibjs` hardcodes the **BN254** prime field, whereas LetsPay circuits use **BLS12-381** (`--prime bls12381`). | Never compute Poseidon commitments using `circomlibjs`. Always obtain commitments from the circuit's `snarkjs.groth16.fullProve` output (`publicSignals`) and persist the returned commitment string. |
+| `Duplicate identifier 'DataKey'` or `'Errors'` after running `stellar contract bindings typescript` | `salary_bracket_verifier` cross-calls `payroll_verifier`, causing Stellar CLI to emit both contracts' `DataKey`/`Errors` enums in the generated `index.ts`. | Run the deduplication snippet in `docs/DEPLOYMENT.md` (Section 6) to strip the duplicate `export type DataKey` block in `client/lib/bindings/salary_bracket_verifier/src/index.ts`. |
+| Browser console reports `404 Not Found` for `/circuits/<name>.wasm` or `/circuits/<name>.zkey` | The circuit artifacts were not copied into `client/public/circuits/`. | Run `bash scripts/setup_ceremony.sh <circuit_name>` (or verify `client/public/circuits/` is intact in `git status`). |
+| `Error: NEXT_PUBLIC_PAYROLL_CONTRACT_ID is not set` in the browser | `client/.env.local` is missing or empty. | Run `cp client/.env.example client/.env.local` and verify `NEXT_PUBLIC_PAYROLL_CONTRACT_ID` and `NEXT_PUBLIC_SBV_CONTRACT_ID` match `deployments/testnet.json`. |
+| `error[E0463]: can't find crate for std` or WASM build rejected with `reference-types not enabled` | Building Soroban contracts with `wasm32-unknown-unknown` on Rust `1.82+` emits WebAssembly reference types not supported by Soroban. | Always build with target `wasm32v1-none` (`rustup target add wasm32v1-none` and `stellar contract build --optimize`). |
+| `e2e_income_only.ts` or attestation scripts fail immediately after payroll disbursement | Testnet RPC indexing lag between ledger close and event/state visibility. | Wait 1–2 ledgers (~5–10 seconds) and re-run `pnpm exec tsx scripts/e2e_income_only.ts`, which includes built-in polling retries. |
