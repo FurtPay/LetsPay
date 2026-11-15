@@ -31,6 +31,129 @@ Proofs are generated in the browser with snarkjs and verified on-chain by Soroba
 
 ---
 
+## System Architecture
+
+### 1. Component & Confidential Boundary Diagram
+
+The diagram below shows how the browser client, client-side cryptographic modules, zero-knowledge circuits, Stellar wallets, Soroban smart contracts, and Stellar Asset Contracts (SAC) interact, and where the **confidential state boundary** lies:
+
+```mermaid
+flowchart TB
+  subgraph Browser["Confidential Client Boundary (Browser — Private Witness & Keys)"]
+    direction TB
+    UI["Next.js 16 App Router UI<br/>(/wallet, /employer, /invoice, /attest, /auditor)"]
+    Secrets["Confidential State Store (localStorage + JSON Backup)<br/>• Balance secrets: (balance, blinding)<br/>• Note secrets: (salary, note_blinding)<br/>• Payroll batch salt & salary vector<br/>• Recipient x25519 Viewing Keypair"]
+    NoteCrypto["Client Crypto (@noble/curves & @noble/ciphers)<br/>• x25519 ECDH Shared Secret<br/>• AES-GCM-256 Note & Auditor Packet Encryption"]
+    Prover["In-Browser ZK Prover (snarkjs + Circom 2.1.6 WASM)<br/>• 12 Groth16 Circuits over BLS12-381 (/public/circuits/*.wasm & *.zkey)<br/>• ZCash Uncompressed BE Codec (groth16Codec.ts)"]
+    WalletKit["Stellar Wallets Kit (Freighter / LOBSTR / xBull)<br/>Signs Soroban Auth Entries & Transaction Envelope"]
+
+    UI --> Secrets
+    UI --> NoteCrypto
+    UI --> Prover
+    Secrets --> Prover
+    Secrets --> NoteCrypto
+    Prover --> WalletKit
+    NoteCrypto --> WalletKit
+  end
+
+  subgraph Stellar["Public On-Chain Boundary (Stellar Soroban Network — Public Commitments & Ciphertexts)"]
+    direction TB
+    RPC["Soroban JSON-RPC<br/>Simulation & Transaction Submission"]
+
+    subgraph PV["payroll_verifier Contract (Soroban Rust)"]
+      CAP59["CAP-0059 BLS12-381 Verifier<br/>g1_msm + multi_pairing_check"]
+      LedgerState["Confidential Balance Ledger<br/>Account + Token ➔ Poseidon(balance, blinding)"]
+      BatchState["Payroll Batch & Escrow Storage<br/>• batch_id ➔ PayrollBatch (payroll_commitment, total_budget)<br/>• escrow_id ➔ ConfidentialEscrow (note_commitment)<br/>• escrow_id ➔ ECDH Note Ciphertext"]
+      VKReg["Viewing Key & Circuit VK Registry<br/>• Account ➔ x25519 Public Key<br/>• Circuit Name ➔ Groth16 VerifyingKey"]
+    end
+
+    subgraph SBV["salary_bracket_verifier Contract (Soroban Rust)"]
+      AttestVerifier["CAP-0059 Attestation Verifier<br/>prove_min_wage / prove_pay_equity / prove_income / verify_bracket"]
+      AttestEvents["On-Chain Compliance Events<br/>MinWageAttested · PayEquityAttested · IncomeAttested"]
+    end
+
+    subgraph SAC["Stellar Asset Contracts (SAC)"]
+      Tokens["Allow-Listed Tokens (XLM / USDC)<br/>Public transfers ONLY on deposit & withdraw"]
+    end
+
+    RPC --> PV
+    RPC --> SBV
+    PV --> CAP59
+    CAP59 --> LedgerState
+    CAP59 --> BatchState
+    PV --> VKReg
+    PV <-->|"transfer() on shield / deshield"| Tokens
+    SBV --> AttestVerifier
+    AttestVerifier -->|"Cross-contract get_batch(batch_id)"| BatchState
+    AttestVerifier --> AttestEvents
+  end
+
+  WalletKit ==>|"Signed Soroban Tx (Public Signals + Groth16 π + Ciphertexts)"| RPC
+  RPC -.->|"Query Commitments, Viewing Pubkeys & Encrypted Notes"| UI
+```
+
+### 2. End-to-End Employer, Recipient & Attestation Sequence
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Emp as Employer (Browser)
+  actor Rec as Recipient (Browser)
+  participant ZK as snarkjs Groth16 Prover (WASM)
+  participant PV as payroll_verifier (Soroban)
+  participant SBV as salary_bracket_verifier (Soroban)
+  participant SAC as Token SAC (XLM / USDC)
+
+  Note over Rec,PV: Phase 1 — One-Time Auto-Receive Enrolment
+  Rec->>PV: register_viewing_key(recipient, x25519_pubkey)
+
+  Note over Emp,SAC: Phase 2 — Confidential Payroll Disbursement
+  Emp->>PV: get_viewing_key(recipient_i)
+  PV-->>Emp: x25519_pubkey_i
+  Emp->>ZK: fullProve(payroll_notes.circom, salaries[0..9], blindings[0..9], salt)
+  ZK-->>Emp: π_payroll + [payroll_commitment, note_commitments[0..9], total_budget, max_salary, active_count]
+  Emp->>Emp: ECDH-encrypt (salary_i, blinding_i) to x25519_pubkey_i ➔ note_cipher_i
+  Emp->>PV: disburse_confidential(employer, π_payroll, total_budget, ..., note_commitments, note_ciphers)
+  PV->>PV: CAP-0059 BLS12-381 pairing check on π_payroll
+  PV->>SAC: transfer(employer ➔ payroll_verifier, total_budget)
+  PV->>PV: Store PayrollBatch(payroll_commitment) + per-recipient Escrows(note_commitment_i, note_cipher_i)
+
+  Note over Emp,SBV: Phase 3 — Zero-Knowledge Compliance Attestation (Optional)
+  Emp->>ZK: fullProve(minimum_wage.circom / pay_equity.circom, salaries[0..9], salt)
+  ZK-->>Emp: π_attest + [payroll_commitment, min_wage / epsilon, active_count]
+  Emp->>SBV: prove_min_wage(employer, batch_id, min_wage, π_attest)
+  SBV->>PV: get_batch(batch_id) ➔ verify payroll_commitment & active_count match
+  SBV->>SBV: CAP-0059 BLS12-381 pairing check on π_attest ➔ emit MinWageAttested
+
+  Note over Rec,SAC: Phase 4 — Recipient Private Claim & Optional Deshield
+  Rec->>PV: get_recipient_escrows(recipient) & get_note_cipher(escrow_id)
+  PV-->>Rec: note_commitment_i + note_cipher_i
+  Rec->>Rec: ECDH-decrypt note_cipher_i with x25519 privkey ➔ (salary_i, blinding_i)
+  Rec->>ZK: fullProve(escrow_settle.circom, salary_i, blinding_i, old_balance, old_blinding, new_blinding)
+  ZK-->>Rec: π_settle + [payee_new_commitment, escrow_commitment, ...]
+  Rec->>PV: settle_escrow(recipient, escrow_id, payee_new_commitment, π_settle)
+  PV->>PV: Verify π_settle & update recipient balance commitment (no token amount revealed)
+  Rec->>ZK: fullProve(withdraw.circom, old_balance, old_blinding, new_blinding, withdraw_amount)
+  ZK-->>Rec: π_withdraw + [new_commitment, old_commitment, withdraw_amount]
+  Rec->>PV: withdraw(recipient, token, withdraw_amount, new_commitment, π_withdraw)
+  PV->>SAC: transfer(payroll_verifier ➔ recipient, withdraw_amount)
+```
+
+### 3. Public vs. Confidential Data Boundaries
+
+| Data Element | On-Chain Visibility | How It Is Stored / Protected |
+|---|---|---|
+| **Individual Employee Salary (`salaries[i]`)** | **Confidential** (Never on-chain) | Hidden inside `note_commitment[i] = Poseidon(salary_i, blinding_i)` and encrypted via x25519 ECDH + AES-GCM-256 in `note_ciphers[i]`. |
+| **Account Confidential Balance (`balance`)** | **Confidential** (Never on-chain) | Stored on-chain solely as `Poseidon(balance, blinding)` (`BytesN<32>`). Only the account holder knows `(balance, blinding)`. |
+| **Invoice Escrow Amount (`escrow_amount`)** | **Confidential** (Never on-chain) | Hidden inside `escrow_commitment = Poseidon(escrow_amount, escrow_blinding)`. `escrow_settle` proves `escrow_amount ∈ [invoice_min, invoice_max]`. |
+| **Employee Wage / Equity / Income Witness** | **Confidential** (Never on-chain) | Proven in zero knowledge against `payroll_commitment` or `note_commitments`; only boolean attestation events (`MinWageAttested`, `PayEquityAttested`, `IncomeAttested`) are emitted. |
+| **Auditor Salary Breakdown Packet** | **Confidential to Auditor** | Encrypted client-side with the auditor's x25519 public key; verifiable against the on-chain `payroll_commitment`. |
+| **Employer Total Payroll Budget (`total_budget`)** | **Public** | Visible on-chain when tokens are transferred into `payroll_verifier` during `disburse_confidential`. |
+| **Shield (`deposit`) & Deshield (`withdraw`) Amounts** | **Public** | Visible at the token boundary where real SAC tokens (`XLM` / `USDC`) enter or leave the `payroll_verifier` contract. |
+| **Sender & Recipient Stellar Addresses** | **Public** | Identified parties (`employer`, `recipient`, `payer`, `payee`) authenticate with `require_auth()`; LetsPay hides payment amounts, not participant identities. |
+
+---
+
 ## How confidential payroll works
 
 ```
